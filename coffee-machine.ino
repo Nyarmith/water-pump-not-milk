@@ -1,4 +1,110 @@
 #include <SoftwareSerial.h>
+#include "coffee-pins.hh"
+
+
+class LevelSensor
+{
+public:
+    LevelSensor(int pin) : sensePin_(pin) {}
+
+    bool checkState()
+    {
+        measured = digitalRead(sensePin_);
+        measured = failOpen_ ? !measured : measured;
+        
+        if (measured == curState_)
+        {
+            transitionTime = millis();
+            return measured;
+        }
+
+        if (millis() - transitionTime_ < debounceTime_)
+        {
+            return curState_;
+        }
+
+        transitionTime = millis();
+        curState_ = measured;
+        return curState_; if (measured == ne
+    }
+
+private:
+    int sensePin_;
+    bool failOpen_;
+    uint64_t transitionTime_;
+    bool curState_;
+    static constexpr debounceTime_ = 250; // millis
+};
+
+
+enum class States { Standby, Pump, Failure };
+
+class StateMachine
+{
+private:
+    State current{Standby};
+
+    static constexpr uint64_t maxFillTime_;
+    static constexpr uint64_t minEmptyTime_;
+    uint64_t elapsedPump_; 
+    uint64_t elapsedLastFill_; 
+public:
+    void update(uint64_t dt)
+    {
+        digitalRead(LOW_LEVEL_PIN);
+        if (elampsedPump_ > maxFillTime_)
+        {
+            // pumping for too long
+            transition(States::Failure);
+        }
+
+        for (condition : conditions)
+        {
+            if (condition.satisfied())
+                transition(condition.state);
+        }
+
+        stateop(dt);
+    };
+
+    void transition(State next)
+    {
+        // on certain transitions we enable/disable stuff
+        auto prev = current;
+
+        // transition functions
+        if (prev == States::Failure) //can't escape failure
+            return;
+        else if (prev == States::Standby && next == States::Pump)
+        {
+            elapsedPump_ = 0;
+            digitalWrite(WATER_PUMP_PIN, FILL);
+        }
+        else if (prev == States::Pump)
+        {
+            elapsedLastFill_ = 0;
+            digitalWrite(WATER_PUMP_PIN, STOP);
+        }
+        current = dst;
+    };
+
+    void stateop(uint64_t dt)
+    {
+        switch(current)
+        {
+            case States::Standby:
+                return;
+            case States::Pump:
+                elapsedPump_ += dt;
+                // keep pumping,
+                // update dt for failsafes or something
+                return;
+            case States::Failure:
+                // blink error light
+                return;
+        }
+    };
+};
 
 
 /* failsafes:
@@ -6,14 +112,6 @@
  * - how long it's been since it was last full
  * - checking that our switches are in a sane state
  */
-
-constexpr unsigned LOW_LEVEL_PIN 2;
-constexpr unsigned HIGH_LEVEL_PIN 3;
-constexpr unsigned FAILSAFE_LEVEL_PIN 4;
-constexpr unsigned WATER_PUMP_ENABLE_PIN 5;
-
-constexpr unsigned FILL HIGH;
-constexpr unsigned STOP LOW;
 
 // TODO: Abstract these guys away
 // TODO: Make state machine with debounce time for transitions
