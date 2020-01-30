@@ -1,7 +1,6 @@
 #include <SoftwareSerial.h>
 #include "coffee-pins.hh"
 
-
 class LevelSensor
 {
 public:
@@ -9,23 +8,23 @@ public:
 
     bool checkState()
     {
-        measured = digitalRead(sensePin_);
+        bool measured = digitalRead(sensePin_);
         measured = failOpen_ ? !measured : measured;
+        
+        uint64_t curTime = millis();
         
         if (measured == curState_)
         {
-            transitionTime = millis();
-            return measured;
+            transitionTime = curTime;
         }
 
-        if (millis() - transitionTime_ < debounceTime_)
+        if (curTime - transitionTime_ > debounceTime_)
         {
-            return curState_;
+            transitionTime = curTime; 
+            curState_ = measured;
         }
-
-        transitionTime = millis();
-        curState_ = measured;
-        return curState_; if (measured == ne
+        
+        return curState_;
     }
 
 private:
@@ -48,21 +47,34 @@ private:
     static constexpr uint64_t minEmptyTime_;
     uint64_t elapsedPump_; 
     uint64_t elapsedLastFill_; 
+
+    LevelSensor lowSensor_{LOW_LEVEL_PIN};
+    LevelSensor highSensor_{HIGH_LEVEL_PIN};
+    LevelSensor overflowSensor_{FAILSAFE_LEVEL_PIN};
+
+
+    bool checkFailures()
+    {
+        // how long we've been pumping water
+        if (elampsedPump_ > maxFillTime_)
+            return true;
+
+        // checking the sanity of our switch state
+
+        // bad state: any time the sensors above see something the sensors below do
+        // or the overflow sensor is on
+        if (overflowSensor_.checkState() || (highSensor_.checkState() && !lowSensor_.checkState()))
+            return true;
+
+        return false;
+    }
 public:
     void update(uint64_t dt)
     {
         digitalRead(LOW_LEVEL_PIN);
-        if (elampsedPump_ > maxFillTime_)
-        {
-            // pumping for too long
-            transition(States::Failure);
-        }
 
-        for (condition : conditions)
-        {
-            if (condition.satisfied())
-                transition(condition.state);
-        }
+        if (checkFailures())
+            transition(States::Failure);
 
         stateop(dt);
     };
@@ -106,12 +118,6 @@ public:
     };
 };
 
-
-/* failsafes:
- * - how long we've been pumping water
- * - how long it's been since it was last full
- * - checking that our switches are in a sane state
- */
 
 // TODO: Abstract these guys away
 // TODO: Make state machine with debounce time for transitions
