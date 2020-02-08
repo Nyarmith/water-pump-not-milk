@@ -1,38 +1,34 @@
 #include <SoftwareSerial.h>
 #include "coffee-pins.hh"
 
+
+template<uint8_t pin_, uint64_t debounceTime_, bool failOpen_>
 class LevelSensor
 {
 public:
-    LevelSensor(int pin) : sensePin_(pin) {}
 
-    bool checkState()
+    bool checkState(uint64_t curTime)
     {
-        bool measured = digitalRead(sensePin_);
-        measured = failOpen_ ? !measured : measured;
+        bool measuredState = digitalRead(pin_);
+        measuredState = failOpen_ ? !measuredState : measuredState;
         
-        uint64_t curTime = millis();
-        
-        if (measured == curState_)
+        if (measuredState == curState_)
         {
-            transitionTime = curTime;
+            transitionTime_ = curTime;
         }
 
         if (curTime - transitionTime_ > debounceTime_)
         {
-            transitionTime = curTime; 
-            curState_ = measured;
+            transitionTime_ = curTime; 
+            curState_ = measuredState;
         }
         
         return curState_;
     }
 
 private:
-    int sensePin_;
-    bool failOpen_;
     uint64_t transitionTime_;
     bool curState_;
-    static constexpr debounceTime_ = 250; // millis
 };
 
 
@@ -41,117 +37,108 @@ enum class States { Standby, Pump, Failure };
 class StateMachine
 {
 private:
-    State current{Standby};
+    States current_{States::Standby};
 
-    static constexpr uint64_t maxFillTime_;
-    static constexpr uint64_t minEmptyTime_;
-    uint64_t elapsedPump_; 
-    uint64_t elapsedLastFill_; 
+    static constexpr uint64_t maxFillTime_{3*60*static_cast<uint64_t>(1000)};
+    static constexpr uint64_t minEmptyTime_{5*60*static_cast<uint64_t>(1000)};
+    uint64_t pumpTransitionOnTime_{0}; 
+    uint64_t pumpTransitionOffTime_{minEmptyTime_}; 
 
-    LevelSensor lowSensor_{LOW_LEVEL_PIN};
-    LevelSensor highSensor_{HIGH_LEVEL_PIN};
-    LevelSensor overflowSensor_{FAILSAFE_LEVEL_PIN};
+    LevelSensor<LOW_LEVEL_PIN, 100, true> lowSensor_{};
+    LevelSensor<HIGH_LEVEL_PIN, 100, true> highSensor_{};
+    LevelSensor<FAILSAFE_LEVEL_PIN, 100, true> overflowSensor_{};
 
 
-    bool checkFailures()
+    bool checkFailures(uint64_t curTime)
     {
         // how long we've been pumping water
-        if (elampsedPump_ > maxFillTime_)
+        if (curTime - pumpTransitionOnTime_ > maxFillTime_ and current_ == States::Pump)
             return true;
+
+        // check that the tank didn't empty faster than should be possible
+        // may signal bad sensor or leaking tank
+        if (curTime - pumpTransitionOffTime_ < minEmptyTime_ and current_ == States::Pump)
+            return true;
+
 
         // checking the sanity of our switch state
 
         // bad state: any time the sensors above see something the sensors below do
         // or the overflow sensor is on
-        if (overflowSensor_.checkState() || (highSensor_.checkState() && !lowSensor_.checkState()))
+        if (overflowSensor_.checkState(curTime) || (highSensor_.checkState(curTime) && !lowSensor_.checkState(curTime)))
             return true;
 
         return false;
     }
-public:
-    void update(uint64_t dt)
-    {
-        digitalRead(LOW_LEVEL_PIN);
-
-        if (checkFailures())
-            transition(States::Failure);
-
-        stateop(dt);
-    };
-
-    void transition(State next)
+    
+    void transition(States next, uint64_t curTime)
     {
         // on certain transitions we enable/disable stuff
-        auto prev = current;
+        auto prev = current_;
 
         // transition functions
         if (prev == States::Failure) //can't escape failure
             return;
         else if (prev == States::Standby && next == States::Pump)
         {
-            elapsedPump_ = 0;
+            pumpTransitionOnTime_ = curTime;
             digitalWrite(WATER_PUMP_PIN, FILL);
         }
         else if (prev == States::Pump)
         {
-            elapsedLastFill_ = 0;
+            pumpTransitionOffTime_ = curTime;
             digitalWrite(WATER_PUMP_PIN, STOP);
         }
-        current = dst;
-    };
+        current_ = next;
+    }
 
-    void stateop(uint64_t dt)
+    void stateop(uint64_t curTime)
     {
-        switch(current)
+        switch(current_)
         {
             case States::Standby:
+                if (!lowSensor_.checkState(curTime))
+                {
+                    // if the lowSensor is no longer on, pump
+                    transition(States::Pump, curTime);
+                }
                 return;
             case States::Pump:
-                elapsedPump_ += dt;
+                if (highSensor_.checkState(curTime))
+                {
+                    // high sensor is on, stop pumping
+                    transition(States::Standby, curTime);
+                }
                 // keep pumping,
-                // update dt for failsafes or something
                 return;
             case States::Failure:
+                // no possible transition out of failure state
+                digitalWrite(WATER_PUMP_PIN, STOP);
                 // blink error light
                 return;
         }
-    };
+    }
+
+public:
+    void update(uint64_t curTime)
+    {
+        if (checkFailures(curTime))
+            transition(States::Failure, curTime);
+
+        stateop(curTime);
+    }
 };
 
-
-// TODO: Abstract these guys away
-// TODO: Make state machine with debounce time for transitions
-// TODO: Make low-pass filter
-// TODO: Implement project well (good)
-constexpr unsigned DEBOUNCE_INTERVAL_MS 733;
-constexpr unsigned MAX_FLOW_TIME 24000;
-constexpr unsigned DEBOUNCE 500;
-
-unsigned int prev_time = 0;
-unsigned int curr_time = 0;
-unsigned int flow_time = 0;
+StateMachine pump;
 
 void setup() {
-  pinMode(TRIGGER_PIN,OUTPUT);
-  pinMode(ECHO_PIN,INPUT);
-  pinMode(RELAY_PIN,OUTPUT);
+  pinMode(LOW_LEVEL_PIN, INPUT_PULLUP);
+  pinMode(HIGH_LEVEL_PIN, INPUT_PULLUP);
+  pinMode(FAILSAFE_LEVEL_PIN, INPUT_PULLUP);
+  pinMode(WATER_PUMP_PIN,OUTPUT);
   Serial.begin(9600);
 }
+
 void loop() {
-  unsigned int now = millis();
-  flow_time = millis() - prev_time;
-  Serial.print(distance);
-  Serial.println("cm");
-  if(debounce < DEBOUNCE_INTERVAL_MS)
-    return;
-  if(distance <= 10) {
-    //digitalWrite(RELAY_PIN,STOP);
-    Serial.println("STOP!");
-    flow_time = 0;    
-  }
-  if(distance >= 22 && now-prev_time < DEBOUNCE){ 
-    //digitalWrite(RELAY_PIN,FILL);
-    Serial.println("FILL!");
-    prev_time = millis();  
-  }                                                                                                        
+    pump.update(millis());
 }
