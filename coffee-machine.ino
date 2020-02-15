@@ -39,26 +39,31 @@ class StateMachine
 private:
     States current_{States::Standby};
 
-    static constexpr uint64_t maxFillTime_{3*60*static_cast<uint64_t>(1000)};
-    static constexpr uint64_t minEmptyTime_{5*60*static_cast<uint64_t>(1000)};
+    static constexpr uint64_t maxFillTime_{1*60*static_cast<uint64_t>(1000)};
+    static constexpr uint64_t minEmptyTime_{1*60*static_cast<uint64_t>(1000)};
     uint64_t pumpTransitionOnTime_{0}; 
     uint64_t pumpTransitionOffTime_{minEmptyTime_}; 
 
-    LevelSensor<LOW_LEVEL_PIN, 100, true> lowSensor_{};
-    LevelSensor<HIGH_LEVEL_PIN, 100, true> highSensor_{};
-    LevelSensor<FAILSAFE_LEVEL_PIN, 100, true> overflowSensor_{};
-
+    LevelSensor<LOW_LEVEL_PIN, 100, false> lowSensor_{};
+    LevelSensor<HIGH_LEVEL_PIN, 100, false> highSensor_{};
+    LevelSensor<FAILSAFE_LEVEL_PIN, 100, false> overflowSensor_{};
 
     bool checkFailures(uint64_t curTime)
     {
         // how long we've been pumping water
         if (curTime - pumpTransitionOnTime_ > maxFillTime_ and current_ == States::Pump)
+        {
+            Serial.println("we've been pumping water too long!");
             return true;
+        }
 
         // check that the tank didn't empty faster than should be possible
         // may signal bad sensor or leaking tank
         if (curTime - pumpTransitionOffTime_ < minEmptyTime_ and current_ == States::Pump)
+        {
+            Serial.println("tank emptied way too fast!");
             return true;
+        }
 
 
         // checking the sanity of our switch state
@@ -66,7 +71,10 @@ private:
         // bad state: any time the sensors above see something the sensors below do
         // or the overflow sensor is on
         if (overflowSensor_.checkState(curTime) || (highSensor_.checkState(curTime) && !lowSensor_.checkState(curTime)))
+        {
+            Serial.println("switch state bad!");
             return true;
+        }
 
         return false;
     }
@@ -81,6 +89,9 @@ private:
             return;
         else if (prev == States::Standby && next == States::Pump)
         {
+            if (pumpTransitionOnTime_ == 0) // first pump
+                pumpTransitionOnTime_ = millis();
+
             pumpTransitionOnTime_ = curTime;
             digitalWrite(WATER_PUMP_PIN, FILL);
         }
@@ -120,10 +131,34 @@ private:
     }
 
 public:
+    char* getState()
+    {
+        switch(current_)
+        {
+            case States::Standby:
+                return "Standby";
+            case States::Pump:
+                return "Pump";
+            case States::Failure:
+                return "Failure";
+            default:
+                return "Unknown!";
+        }
+    }
     void update(uint64_t curTime)
     {
+        Serial.print(lowSensor_.checkState(curTime));
+        Serial.print(" ");
+        Serial.print(highSensor_.checkState(curTime));
+        Serial.print(" ");
+        Serial.print(overflowSensor_.checkState(curTime));
+        Serial.print(" ");
+
         if (checkFailures(curTime))
+        {
+            Serial.println("Detected failure in checks!");
             transition(States::Failure, curTime);
+        }
 
         stateop(curTime);
     }
@@ -141,4 +176,5 @@ void setup() {
 
 void loop() {
     pump.update(millis());
+    Serial.println(pump.getState());
 }
